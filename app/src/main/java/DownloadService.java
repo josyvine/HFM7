@@ -124,9 +124,7 @@ public class DownloadService extends Service {
         }).addOnFailureListener(new OnFailureListener() {
             @Override
             public void onFailure(@NonNull Exception e) {
-                Intent errorIntent = new Intent(ACTION_DOWNLOAD_ERROR);
-                errorIntent.putExtra(EXTRA_ERROR_MESSAGE, "Error: Could not retrieve drop details.\n\n" + getStackTraceAsString(e));
-                LocalBroadcastManager.getInstance(DownloadService.this).sendBroadcast(errorIntent);
+                broadcastError(getStackTraceAsString(e));
                 stopServiceAndCleanup(null);
             }
         });
@@ -142,10 +140,8 @@ public class DownloadService extends Service {
         try {
             tempCloakedFile = new File(getCacheDir(), "downloading_" + System.currentTimeMillis() + ".log");
             updateNotification("Connecting...", true, 0, (int) totalSize);
+            broadcastStatus("Connecting...", "Attempting to reach sender...", -1, -1, -1);
 
-            // --- THIS IS THE FIX ---
-            // The `while` loop has been removed. The code now tries to connect only ONCE.
-            // If the `new Socket(host, port)` fails, it will immediately jump to the `catch` block below.
             socket = new Socket(host, port);
             out = socket.getOutputStream();
             PrintWriter writer = new PrintWriter(out, true);
@@ -188,9 +184,8 @@ public class DownloadService extends Service {
                 fos.write(buffer, 0, bytesRead);
                 bytesDownloaded += bytesRead;
                 updateNotification("Receiving...", true, (int) bytesDownloaded, (int) totalSize);
+                broadcastStatus("Receiving File...", originalFilename, (int) bytesDownloaded, (int) totalSize, bytesDownloaded);
             }
-            // --- END OF FIX AREA ---
-
 
             if (isCancelled) {
                  stopServiceAndCleanup("Download cancelled.");
@@ -199,6 +194,7 @@ public class DownloadService extends Service {
 
             if (bytesDownloaded >= totalSize) {
                 updateNotification("Restoring file...", true, (int) totalSize, (int) totalSize);
+                broadcastStatus("Restoring File...", "Decrypting and saving...", -1, -1, -1);
                 File publicDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "HFM Drop");
                 if (!publicDir.exists()) {
                     publicDir.mkdirs();
@@ -209,15 +205,14 @@ public class DownloadService extends Service {
                 if (success) {
                     db.collection("drop_requests").document(dropRequestId).update("status", "complete");
                     updateNotification("Download Complete", false, 100, 100);
+                    broadcastComplete();
                     scanFile(finalFile);
                     if (FirebaseAuth.getInstance().getCurrentUser() != null) {
                         FirebaseAuth.getInstance().getCurrentUser().delete();
                     }
                 } else {
                     db.collection("drop_requests").document(dropRequestId).update("status", "error");
-                    Intent errorIntent = new Intent(ACTION_DOWNLOAD_ERROR);
-                    errorIntent.putExtra(EXTRA_ERROR_MESSAGE, "Decryption failed. The secret number may be incorrect or the file may be corrupt.");
-                    LocalBroadcastManager.getInstance(this).sendBroadcast(errorIntent);
+                    broadcastError("Decryption failed. The secret number may be incorrect or the file may be corrupt.");
                     stopServiceAndCleanup(null);
                 }
             } else {
@@ -226,9 +221,7 @@ public class DownloadService extends Service {
 
         } catch (Exception e) {
             Log.e(TAG, "Download process failed.", e);
-            Intent errorIntent = new Intent(ACTION_DOWNLOAD_ERROR);
-            errorIntent.putExtra(EXTRA_ERROR_MESSAGE, getStackTraceAsString(e));
-            LocalBroadcastManager.getInstance(this).sendBroadcast(errorIntent);
+            broadcastError(getStackTraceAsString(e));
             stopServiceAndCleanup(null);
         } finally {
             try { if (socket != null) socket.close(); } catch (IOException ignored) {}
@@ -246,6 +239,30 @@ public class DownloadService extends Service {
         return sw.toString();
     }
 
+    private void broadcastStatus(String major, String minor, int progress, int max, long bytes) {
+        Intent intent = new Intent(DropProgressActivity.ACTION_UPDATE_STATUS);
+        intent.putExtra(DropProgressActivity.EXTRA_STATUS_MAJOR, major);
+        intent.putExtra(DropProgressActivity.EXTRA_STATUS_MINOR, minor);
+        intent.putExtra(DropProgressActivity.EXTRA_PROGRESS, progress);
+        intent.putExtra(DropProgressActivity.EXTRA_MAX_PROGRESS, max);
+        intent.putExtra(DropProgressActivity.EXTRA_BYTES_TRANSFERRED, bytes);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
+
+    private void broadcastComplete() {
+        Intent intent = new Intent(DropProgressActivity.ACTION_TRANSFER_COMPLETE);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
+
+    private void broadcastError(String message) {
+        // This will be received by HFMDropActivity for the alert dialog
+        Intent hfmDropErrorIntent = new Intent(ACTION_DOWNLOAD_ERROR);
+        hfmDropErrorIntent.putExtra(EXTRA_ERROR_MESSAGE, message);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(hfmDropErrorIntent);
+
+        // This will be received by DropProgressActivity if it is open
+        LocalBroadcastManager.getInstance(this).sendBroadcast(new Intent(DropProgressActivity.ACTION_TRANSFER_ERROR));
+    }
 
     private String readLine(InputStream in) throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
