@@ -1,8 +1,10 @@
 package com.hfm.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Bundle;
@@ -74,13 +76,11 @@ public class DropProgressActivity extends Activity {
         cancelButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                // If the transfer is done, this button just closes the activity.
                 if (isTransferCompleteOrErrored) {
                     finish();
                     return;
                 }
                 
-                // Otherwise, it cancels the ongoing service.
                 Intent serviceIntent;
                 if (isSender) {
                     serviceIntent = new Intent(DropProgressActivity.this, SenderService.class);
@@ -133,17 +133,49 @@ public class DropProgressActivity extends Activity {
                     progressBar.setIndeterminate(false);
                     progressBar.setProgress(progressBar.getMax());
                     cancelButton.setText("Done");
-                } else if (ACTION_TRANSFER_ERROR.equals(action)) {
+
+                // --- THIS IS THE FIX ---
+                // We now listen for the same error action that HFMDropActivity uses.
+                } else if (DownloadService.ACTION_DOWNLOAD_ERROR.equals(action)) {
                     isTransferCompleteOrErrored = true;
                     statusMajorTextView.setText("Transfer Failed");
                     statusMinorTextView.setText("Please check the error report.");
                     progressBar.setIndeterminate(false);
                     progressBar.setProgress(0);
                     cancelButton.setText("Close");
+
+                    // Extract the error message and show the dialog
+                    String errorReport = intent.getStringExtra(DownloadService.EXTRA_ERROR_MESSAGE);
+                    if (errorReport != null && !errorReport.isEmpty()) {
+                        showErrorDialog(errorReport);
+                    } else {
+                        showErrorDialog("An unknown transfer error occurred.");
+                    }
                 }
             }
         };
     }
+    
+    // --- NEW: Method to show the error dialog ---
+    private void showErrorDialog(String errorReport) {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Transfer Failed: Error Report");
+        builder.setMessage(errorReport);
+        builder.setPositiveButton("Close", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                dialog.dismiss();
+            }
+        });
+
+        AlertDialog dialog = builder.create();
+        dialog.show();
+    }
+
 
     @Override
     protected void onStart() {
@@ -151,7 +183,9 @@ public class DropProgressActivity extends Activity {
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_UPDATE_STATUS);
         filter.addAction(ACTION_TRANSFER_COMPLETE);
-        filter.addAction(ACTION_TRANSFER_ERROR);
+        // --- THIS IS THE FIX ---
+        // Make this activity listen for the same error action as HFMDropActivity.
+        filter.addAction(DownloadService.ACTION_DOWNLOAD_ERROR);
         LocalBroadcastManager.getInstance(this).registerReceiver(statusReceiver, filter);
     }
 
@@ -163,7 +197,6 @@ public class DropProgressActivity extends Activity {
     
     @Override
     public void onBackPressed() {
-        // Prevent user from backing out while transfer is in progress
         if (!isTransferCompleteOrErrored) {
             Toast.makeText(this, "Please cancel the transfer to go back.", Toast.LENGTH_SHORT).show();
         } else {
